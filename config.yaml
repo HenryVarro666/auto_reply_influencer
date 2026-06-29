@@ -1,0 +1,23 @@
+# Pipeline configuration. CLI flags override these values.
+
+# --- Stage 1: fetch ---------------------------------------------------------
+csv_path: instagram_football_top100_formatted.csv
+time_window_hours: 2        # only keep posts published within the last N hours
+posts_per_account: 12       # how many recent posts to pull per account
+fetch_retries: 5            # transient-error retries (proxy rotates IP per retry)
+min_delay_seconds: 1.0      # randomized pause between accounts...
+max_delay_seconds: 3.0      # ...to look less like a scraper
+
+# --- Stage 2: LLM comment generation ----------------------------------------
+provider: claude-cli        # claude-cli | claude-api | gpt | gemini
+max_comment_chars: 160      # hard cap; longer drafts are rejected
+max_hashtags: 2             # last hashtag should be #EZCollegeApp
+allow_link: false           # brand mention only — NO url (lowest ban risk)
+
+# --- Stage 3: daily tasks ---------------------------------------------------
+max_tasks_per_day: 20       # cap comments committed per day (anti-ban pacing)
+
+# --- Paths (relative to project root) ---------------------------------------
+db_path: data/influencer.db
+media_dir: media
+tasks_dir: daily_tasks

@@ -1,0 +1,13 @@
+# Stage 1 (fetch) — required
+httpx[http2]>=0.26     # HTTP/2 is mandatory for IG's web_profile_info endpoint
+python-dotenv>=1.0     # load .env (IG_PROXY, API keys)
+PyYAML>=6.0            # config.yaml
+Pillow>=10.0           # image handling (Gemini vision + thumbnail validation)
+tqdm>=4.66             # progress bars for fetch / generate
+
+# Stage 2 (LLM) — optional, only needed for the provider you use.
+# The default provider is `claude-cli`, which shells out to the `claude`
+# command and needs NONE of the packages below.
+# openai>=1.0          # provider: gpt  (and claude-api uses the anthropic SDK)
+# google-generativeai>=0.8   # provider: gemini
+# anthropic>=0.39      # provider: claude-api (fallback when the CLI is absent)
