@@ -8,6 +8,7 @@ from core.ig_fetcher import (
     Post,
     ProfileNotFound,
     _merge_dedup_posts,
+    _parse_embed_post,
     _parse_hashtag_posts,
     _parse_topsearch,
     shortcode_from_url,
@@ -158,3 +159,37 @@ def test_search_keyword_tops_up_from_users(monkeypatch):
                         lambda handle, limit=12: [Post(post_id="u1", url="u", owner_handle=handle)])
     out = f.search_keyword("football", limit=5)
     assert [p.post_id for p in out] == ["h1", "u1"]
+
+
+# --- Task 4 tests ---
+
+
+def test_parse_embed_post_from_json_blob():
+    html = (
+        'prefix '
+        '"display_url":"https:\\/\\/cdn.example\\/img.jpg?x=1\\u00261",'
+        '"edge_media_to_caption":{"edges":[{"node":{"text":"Vamos! \\u26bd"}}]},'
+        '"username":"leomessi" suffix'
+    )
+    p = _parse_embed_post(html, "SHORT1")
+    assert p.post_id == "SHORT1"
+    assert p.url == "https://www.instagram.com/p/SHORT1/"
+    assert p.media_url == "https://cdn.example/img.jpg?x=1&1"
+    assert p.caption == "Vamos! ⚽"
+    assert p.owner_handle == "leomessi"
+
+
+def test_parse_embed_post_html_fallback():
+    html = (
+        '<img class="EmbeddedMediaImage" src="https://cdn/h.jpg"/>'
+        '<a class="UsernameText">html_user</a>'
+        '<div class="Caption">hello world</div>'
+    )
+    p = _parse_embed_post(html, "SHORT2")
+    assert p.media_url == "https://cdn/h.jpg"
+    assert p.owner_handle == "html_user"
+
+
+def test_parse_embed_post_raises_when_empty():
+    with pytest.raises(FetchError):
+        _parse_embed_post("<html>nothing useful</html>", "SHORT3")

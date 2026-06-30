@@ -215,6 +215,64 @@ def _parse_topsearch(payload: dict) -> tuple[list[str], list[str]]:
     return tags, users
 
 
+_EMBED_DISPLAY_RE = re.compile(r'"display_url":"(.*?)"')
+_EMBED_USER_JSON_RE = re.compile(r'"username":"(.*?)"')
+_EMBED_CAPTION_JSON_RE = re.compile(
+    r'"edge_media_to_caption":\{"edges":\[\{"node":\{"text":"(.*?)"\}\}\]'
+)
+_EMBED_IMG_HTML_RE = re.compile(r'class="EmbeddedMediaImage"[^>]*?src="(.*?)"')
+_EMBED_USER_HTML_RE = re.compile(r'class="UsernameText"[^>]*>(.*?)<')
+_EMBED_CAPTION_HTML_RE = re.compile(r'class="Caption"[^>]*>(.*?)</div>', re.DOTALL)
+
+
+def _json_unescape(s: str) -> str:
+    """Decode a JSON string body (handles \\/, \\uXXXX, \\" etc.)."""
+    try:
+        return json.loads('"' + s + '"')
+    except Exception:  # noqa: BLE001
+        return s
+
+
+def _parse_embed_post(html: str, shortcode: str) -> Post:
+    if not html:
+        raise FetchError(f"empty embed for {shortcode}")
+
+    img = None
+    m = _EMBED_DISPLAY_RE.search(html)
+    if m:
+        img = _json_unescape(m.group(1))
+    if not img:
+        m = _EMBED_IMG_HTML_RE.search(html)
+        if m:
+            img = _json_unescape(m.group(1))
+
+    caption = ""
+    m = _EMBED_CAPTION_JSON_RE.search(html)
+    if m:
+        caption = _json_unescape(m.group(1))
+    elif (m := _EMBED_CAPTION_HTML_RE.search(html)):
+        caption = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+
+    owner = None
+    m = _EMBED_USER_JSON_RE.search(html)
+    if m:
+        owner = _json_unescape(m.group(1))
+    if not owner:
+        m = _EMBED_USER_HTML_RE.search(html)
+        if m:
+            owner = m.group(1).strip()
+
+    if not img and not caption:
+        raise FetchError(f"could not parse embed for {shortcode}")
+    return Post(
+        post_id=shortcode,
+        url=f"https://www.instagram.com/p/{shortcode}/",
+        caption=caption,
+        media_url=img,
+        owner_handle=owner,
+    )
+
+
 class InstagramFetcher:
     """Fetches recent posts for public profiles via the web endpoint."""
 
@@ -320,3 +378,22 @@ class InstagramFetcher:
             except (FetchError, ProfileNotFound):
                 continue
         return _merge_dedup_posts(groups, limit)
+
+    def _fetch_text(self, url: str) -> str:
+        def _once() -> str:
+            with httpx.Client(**self._client_kwargs()) as client:
+                resp = client.get(url)
+            if resp.status_code == 404:
+                raise ProfileNotFound(url)
+            resp.raise_for_status()
+            return resp.text
+
+        return self._with_retries(_once, url)
+
+    def get_single_post(self, url_or_shortcode: str) -> Post:
+        """Login-free single-post read via the public embed page."""
+        sc = shortcode_from_url(url_or_shortcode)
+        if not sc:
+            raise FetchError(f"could not parse shortcode from {url_or_shortcode!r}")
+        html = self._fetch_text(_EMBED_URL.format(sc))
+        return _parse_embed_post(html, sc)
