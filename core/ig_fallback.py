@@ -15,7 +15,7 @@ import logging
 import os
 from pathlib import Path
 
-from .ig_fetcher import Post, shortcode_from_url
+from .ig_fetcher import Post
 
 logger = logging.getLogger(__name__)
 
@@ -108,22 +108,25 @@ class InstagrapiFallback:
         self._client = cl
         return cl
 
-    def search_hashtag(self, tag: str, limit: int = 100) -> list[Post]:
+    def _with_relogin(self, fn):
+        """Run fn(client); on a login_required error, relogin once and retry."""
         cl = self._get()
-        clean = tag.lstrip("#").strip()
         try:
-            medias = cl.hashtag_medias_top(clean, amount=limit)
+            return fn(cl)
         except Exception as exc:  # noqa: BLE001
             if "login_required" in str(exc).lower():
                 cl.relogin()
-                medias = cl.hashtag_medias_top(clean, amount=limit)
-            else:
-                raise
+                return fn(cl)
+            raise
+
+    def search_hashtag(self, tag: str, limit: int = 100) -> list[Post]:
+        clean = tag.lstrip("#").strip()
+        medias = self._with_relogin(lambda cl: cl.hashtag_medias_top(clean, amount=limit))
         return [_media_to_post(m) for m in medias]
 
     def search_keyword(self, query: str, limit: int = 100) -> list[Post]:
-        cl = self._get()
-        tags = [getattr(h, "name", "") for h in cl.search_hashtags(query)]
+        tags = [getattr(h, "name", "") for h in
+                self._with_relogin(lambda cl: cl.search_hashtags(query))]
         posts: list[Post] = []
         for tag in [t for t in tags if t][:3]:
             posts.extend(self.search_hashtag(tag, limit))
@@ -137,14 +140,14 @@ class InstagrapiFallback:
             if "/" in url_or_shortcode:
                 pk = cl.media_pk_from_url(url_or_shortcode)
             else:
-                sc = shortcode_from_url(url_or_shortcode) or url_or_shortcode
-                pk = cl.media_pk_from_code(sc)
+                pk = cl.media_pk_from_code(url_or_shortcode)
             return _media_to_post(cl.media_info(pk))
         except Exception as exc:  # noqa: BLE001
             logger.error("instagrapi single-post fetch failed for %s: %s", url_or_shortcode, exc)
             return None
 
     def get_recent_posts(self, handle: str, limit: int = 12) -> list[Post]:
-        cl = self._get()
-        uid = cl.user_id_from_username(handle)
-        return [_media_to_post(m) for m in cl.user_medias(uid, amount=limit)]
+        def _fetch(cl):
+            uid = cl.user_id_from_username(handle)
+            return cl.user_medias(uid, amount=limit)
+        return [_media_to_post(m) for m in self._with_relogin(_fetch)]
