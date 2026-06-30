@@ -7,6 +7,7 @@ posts_per_account: 12       # how many recent posts to pull per account
 fetch_retries: 5            # transient-error retries (proxy rotates IP per retry)
 min_delay_seconds: 1.0      # randomized pause between accounts...
 max_delay_seconds: 3.0      # ...to look less like a scraper
+default_top: 100            # hashtag/keyword search: how many posts to pull (--top overrides)
 
 # --- Stage 2: LLM comment generation ----------------------------------------
 provider: claude-cli        # claude-cli | claude-api | gpt | gemini

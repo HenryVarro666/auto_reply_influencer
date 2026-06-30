@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 import run
 from core import store
 from core.ig_fetcher import Post
@@ -78,3 +79,22 @@ def test_gather_with_fallback_paths():
 
     # primary empty, no fallback -> empty
     assert run._gather_with_fallback(lambda: [], None, label="x") == []
+
+
+def test_argparse_rejects_two_sources():
+    p = run.build_parser()
+    with pytest.raises(SystemExit):
+        p.parse_args(["fetch", "--hashtag", "x", "--account", "y"])
+
+
+def test_argparse_accepts_single_source_and_top():
+    p = run.build_parser()
+    ns = p.parse_args(["fetch", "--keyword", "world cup", "--top", "30"])
+    assert run.select_source(ns).value == "world cup"
+    assert ns.top == 30
+
+
+def test_run_subcommand_also_has_sources():
+    p = run.build_parser()
+    ns = p.parse_args(["run", "--hashtag", "football"])
+    assert run.select_source(ns).kind == "hashtag"

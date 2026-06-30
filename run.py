@@ -27,7 +27,7 @@ from typing import Callable
 import yaml
 from dotenv import load_dotenv
 
-from core import comment_generator, store, task_writer
+from core import comment_generator, ig_fallback, store, task_writer
 from core.ig_fetcher import FetchError, InstagramFetcher, Post, ProfileNotFound, normalize_handle
 from core.llm_client import LLMClient, LLMError
 
@@ -208,19 +208,35 @@ def _gather_with_fallback(primary: Callable[[], list], fallback, *, label: str) 
 
 # --- Stage 1 ----------------------------------------------------------------
 def cmd_fetch(args, cfg) -> None:
-    hours = args.hours if args.hours is not None else cfg["time_window_hours"]
-    csv_path = _abs(args.csv or cfg["csv_path"])
-    media_dir = _abs(cfg["media_dir"])
-    conn = store.connect(_abs(cfg["db_path"]))
     proxy = os.getenv("IG_PROXY") or None
     if not proxy:
         print("ℹ️  未设置 IG_PROXY，默认使用本地 IP 直连。"
               "（账号较多时本地 IP 可能被限流；要稳可在 .env 配置代理。）")
-
+    media_dir = _abs(cfg["media_dir"])
+    conn = store.connect(_abs(cfg["db_path"]))
     fetcher = InstagramFetcher(proxy, retries=int(cfg["fetch_retries"]))
-    accounts = read_accounts(csv_path, args.limit)
-    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
     date = store.today_str()
+    source = select_source(args)
+
+    if source.kind in ("csv", "account"):
+        _cmd_fetch_accounts(args, cfg, conn, fetcher, proxy, media_dir, date, source)
+    else:
+        _cmd_fetch_search(args, cfg, conn, fetcher, proxy, media_dir, date, source)
+
+
+def _cmd_fetch_accounts(args, cfg, conn, fetcher, proxy, media_dir, date, source) -> None:
+    hours = args.hours if args.hours is not None else cfg["time_window_hours"]
+    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
+
+    if source.kind == "account":
+        handle = normalize_handle(source.value)
+        if not handle:
+            print(f"无法解析账号：{source.value!r}")
+            return
+        accounts = [{"handle": handle, "name": "", "type": "", "country_league": "",
+                     "followers": None, "url": f"https://www.instagram.com/{handle}/"}]
+    else:
+        accounts = read_accounts(_abs(args.csv or cfg["csv_path"]), args.limit)
 
     new_posts = existing = errors = 0
     print(f"① 抓帖：{len(accounts)} 个账号 · 窗口=过去 {hours}h · "
@@ -239,25 +255,48 @@ def cmd_fetch(args, cfg) -> None:
             _emit(bar, f"  ✗ @{handle}: 抓取失败 — {exc}")
 
         if posts is not None:
-            recent = [p for p in posts if _within_window(p.posted_at, cutoff)]
-            fresh = 0
-            for p in recent:
-                if store.post_exists(conn, p.post_id):
-                    existing += 1
-                    continue
-                media_path = media_dir / date / handle / f"{p.post_id}.jpg"
-                ok = store.download_media(p.media_url, media_path, proxy=proxy)
-                store.insert_post(conn, p, acc, str(media_path) if ok else None)
-                new_posts += 1
-                fresh += 1
-            if fresh:
-                _emit(bar, f"  ✓ @{handle}: 窗口内 {len(recent)} 帖，新增 {fresh}")
+            n, e = _ingest_posts(conn, [(p, acc) for p in posts], media_dir=media_dir,
+                                 date=date, proxy=proxy, cutoff=cutoff)
+            new_posts += n
+            existing += e
+            if n:
+                _emit(bar, f"  ✓ @{handle}: 新增 {n}")
         _advance(bar, f"@{handle} 新{new_posts} 旧{existing} 错{errors}")
         if i < len(accounts):
             time.sleep(random.uniform(float(cfg["min_delay_seconds"]),
                                       float(cfg["max_delay_seconds"])))
     _close(bar)
     print(f"✅ 抓帖完成：新增 {new_posts} 帖，已存在 {existing}，账号错误 {errors}。")
+
+
+def _cmd_fetch_search(args, cfg, conn, fetcher, proxy, media_dir, date, source) -> None:
+    top = args.top if getattr(args, "top", None) else int(cfg["default_top"])
+    cutoff = None
+    if args.hours is not None:
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=args.hours)
+    fb = ig_fallback.InstagrapiFallback() if ig_fallback.fallback_available() else None
+
+    if source.kind == "hashtag":
+        label = f"标签 #{source.value.lstrip('#')}"
+        primary = lambda: fetcher.search_hashtag(source.value, top)
+        fallback = (lambda: fb.search_hashtag(source.value, top)) if fb else None
+    elif source.kind == "keyword":
+        label = f"关键词 “{source.value}”"
+        primary = lambda: fetcher.search_keyword(source.value, top)
+        fallback = (lambda: fb.search_keyword(source.value, top)) if fb else None
+    else:  # post
+        label = f"单帖 {source.value}"
+        primary = lambda: [fetcher.get_single_post(source.value)]
+        fallback = (lambda: [p for p in [fb.get_single_post(source.value)] if p]) if fb else None
+
+    window_note = "" if cutoff is None else f" · 仅过去 {args.hours}h"
+    print(f"① 抓帖（{label}）· 取前 {top} · "
+          f"出口={'代理 IP' if proxy else '本地 IP 直连'}{window_note}")
+    posts = _gather_with_fallback(primary, fallback, label=label)
+    items = [(p, _account_for_post(p)) for p in posts]
+    new, existing = _ingest_posts(conn, items, media_dir=media_dir, date=date,
+                                  proxy=proxy, cutoff=cutoff)
+    print(f"✅ 抓帖完成：{label} 命中 {len(posts)} 帖，新增 {new}，已存在 {existing}。")
 
 
 # --- Stage 2 ----------------------------------------------------------------
@@ -329,14 +368,30 @@ def cmd_stats(args, cfg) -> None:
         print(f"  {k:18s} {v}")
 
 
+def _add_source_args(parser) -> None:
+    """Attach the mutually-exclusive Stage-1 source flags + --top to a subparser."""
+    grp = parser.add_mutually_exclusive_group()
+    grp.add_argument("--account", default=None,
+                     help="single account handle/URL (no CSV needed)")
+    grp.add_argument("--post", default=None,
+                     help="single post URL or shortcode")
+    grp.add_argument("--hashtag", default=None,
+                     help="search a hashtag across accounts (default top 100)")
+    grp.add_argument("--keyword", default=None,
+                     help="general keyword search across accounts (default top 100)")
+    parser.add_argument("--top", type=int, default=None,
+                        help="max posts for hashtag/keyword search (default config.default_top=100)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Instagram influencer auto-comment pipeline.")
     sub = p.add_subparsers(dest="command", required=True)
 
     f = sub.add_parser("fetch", help="Stage 1: fetch recent posts")
     f.add_argument("--hours", type=float, default=None, help="time window (default from config)")
-    f.add_argument("--limit", type=int, default=None, help="only first N accounts")
+    f.add_argument("--limit", type=int, default=None, help="only first N accounts (CSV source)")
     f.add_argument("--csv", default=None, help="override CSV path")
+    _add_source_args(f)
     f.set_defaults(func=cmd_fetch)
 
     g = sub.add_parser("generate", help="Stage 2: generate comments")
@@ -354,6 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--csv", default=None)
     r.add_argument("--provider", default=None)
     r.add_argument("--max-tasks-per-day", type=int, default=None, dest="max_tasks_per_day")
+    _add_source_args(r)
     r.set_defaults(func=cmd_run)
 
     m = sub.add_parser("mark-done", help="record a manual-post result")
