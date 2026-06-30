@@ -21,14 +21,22 @@ This module is read-only. It never logs in and never writes to Instagram.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
+from typing import Callable, TypeVar
+from urllib.parse import quote
 
 import httpx
 
 _WEB_PROFILE_URL = "https://i.instagram.com/api/v1/users/web_profile_info/?username={}"
+_HASHTAG_URL = "https://www.instagram.com/api/v1/tags/web_info/?tag_name={}"
+_TOPSEARCH_URL = "https://www.instagram.com/web/search/topsearch/?context=blended&query={}"
+_EMBED_URL = "https://www.instagram.com/p/{}/embed/captioned/"
+
+_T = TypeVar("_T")
 _IG_APP_ID = "936619743392459"
 _UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) "
@@ -135,6 +143,66 @@ def _parse_posts(user: dict, limit: int) -> list[Post]:
     return posts
 
 
+def _first_image_url(media: dict) -> str | None:
+    def from_candidates(m: dict) -> str | None:
+        cands = ((m.get("image_versions2") or {}).get("candidates")) or []
+        return cands[0].get("url") if cands else None
+
+    url = from_candidates(media)
+    if url:
+        return url
+    carousel = media.get("carousel_media") or []
+    return from_candidates(carousel[0]) if carousel else None
+
+
+def _media_node_to_post(media: dict) -> Post | None:
+    if not media:
+        return None
+    shortcode = media.get("code") or ""
+    pid = str(media.get("pk") or media.get("id") or shortcode)
+    if not pid:
+        return None
+    cap = media.get("caption")
+    caption = (cap.get("text") if isinstance(cap, dict) else "") or ""
+    user = media.get("user") or {}
+    return Post(
+        post_id=pid,
+        url=f"https://www.instagram.com/p/{shortcode}/" if shortcode else "",
+        caption=caption,
+        media_url=_first_image_url(media),
+        posted_at=_ts_to_iso(media.get("taken_at")),
+        like_count=media.get("like_count"),
+        comment_count=media.get("comment_count"),
+        owner_handle=user.get("username"),
+    )
+
+
+def _merge_dedup_posts(groups: list[list[Post]], limit: int) -> list[Post]:
+    seen: set[str] = set()
+    out: list[Post] = []
+    for group in groups:
+        for p in group:
+            if p.post_id in seen:
+                continue
+            seen.add(p.post_id)
+            out.append(p)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _parse_hashtag_posts(payload: dict, limit: int) -> list[Post]:
+    data = payload.get("data") or {}
+    posts: list[Post] = []
+    for key in ("top", "recent"):
+        for sec in (data.get(key) or {}).get("sections") or []:
+            for item in ((sec.get("layout_content") or {}).get("medias")) or []:
+                p = _media_node_to_post(item.get("media") or {})
+                if p:
+                    posts.append(p)
+    return _merge_dedup_posts([posts], limit)
+
+
 class InstagramFetcher:
     """Fetches recent posts for public profiles via the web endpoint."""
 
@@ -145,7 +213,7 @@ class InstagramFetcher:
         self.retries = max(0, retries)
         self.timeout = timeout
 
-    def _request_once(self, handle: str, limit: int) -> list[Post]:
+    def _client_kwargs(self) -> dict:
         kwargs: dict = {
             "http2": True,  # mandatory — see module docstring
             "headers": {"User-Agent": _UA, "x-ig-app-id": _IG_APP_ID},
@@ -154,8 +222,32 @@ class InstagramFetcher:
         }
         if self.proxy:
             kwargs["proxy"] = self.proxy
+        return kwargs
+
+    def _with_retries(self, fn: Callable[[], _T], label: str) -> _T:
+        attempts = self.retries + 1
+        last_err: Exception | None = None
+        for i in range(attempts):
+            try:
+                return fn()
+            except ProfileNotFound:
+                raise
+            except httpx.HTTPStatusError as exc:
+                last_err = exc
+                if exc.response.status_code not in _RETRYABLE_HTTP:
+                    break
+            except httpx.HTTPError as exc:
+                last_err = exc
+            except Exception as exc:  # noqa: BLE001 — parse / empty payload
+                last_err = exc
+                break
+            if not self.proxy and i < attempts - 1:
+                time.sleep(2 ** i)
+        raise FetchError(f"{label}: {last_err}")
+
+    def _request_once(self, handle: str, limit: int) -> list[Post]:
         # Fresh client per call => new connection => new gateway exit IP.
-        with httpx.Client(**kwargs) as client:
+        with httpx.Client(**self._client_kwargs()) as client:
             resp = client.get(_WEB_PROFILE_URL.format(handle))
         if resp.status_code == 404:
             raise ProfileNotFound(f"@{handle}: not found (404)")
@@ -167,29 +259,22 @@ class InstagramFetcher:
         return _parse_posts(user, limit)
 
     def get_recent_posts(self, handle: str, limit: int = 12) -> list[Post]:
-        """Return the newest ``limit`` posts for ``handle`` (newest first).
+        """Return the newest ``limit`` posts for ``handle`` (newest first)."""
+        return self._with_retries(lambda: self._request_once(handle, limit), f"@{handle}")
 
-        Raises ProfileNotFound on 404, FetchError on anything else after
-        exhausting retries.
-        """
-        attempts = self.retries + 1
-        last_err: Exception | None = None
-        for i in range(attempts):
-            try:
-                return self._request_once(handle, limit)
-            except ProfileNotFound:
-                raise  # never retried
-            except httpx.HTTPStatusError as exc:
-                last_err = exc
-                if exc.response.status_code not in _RETRYABLE_HTTP:
-                    break
-            except httpx.HTTPError as exc:
-                last_err = exc  # transient transport/timeout — retry
-            except Exception as exc:  # noqa: BLE001 — parse / empty payload
-                last_err = exc
-                break
-            # With a rotating gateway, retry immediately on a fresh IP. With no
-            # proxy there is one IP, so back off 1s/2s/4s.
-            if not self.proxy and i < attempts - 1:
-                time.sleep(2 ** i)
-        raise FetchError(f"@{handle}: {last_err}")
+    def _fetch_json(self, url: str) -> dict:
+        def _once() -> dict:
+            with httpx.Client(**self._client_kwargs()) as client:
+                resp = client.get(url)
+            if resp.status_code == 404:
+                raise ProfileNotFound(url)
+            resp.raise_for_status()
+            return resp.json()
+
+        return self._with_retries(_once, url)
+
+    def search_hashtag(self, tag: str, limit: int = 100) -> list[Post]:
+        """Login-free hashtag search via tags/web_info. Returns up to ``limit`` posts."""
+        clean = tag.lstrip("#").strip()
+        payload = self._fetch_json(_HASHTAG_URL.format(quote(clean)))
+        return _parse_hashtag_posts(payload, limit)
