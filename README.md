@@ -85,6 +85,13 @@ python run.py run --hours 2              # 3. 一键跑通，结果在 daily_tas
 python run.py fetch --hours 2                 # 抓全部账号、过去 2 小时
 python run.py fetch --hours 48 --limit 5      # 只抓前 5 个账号、放宽到 48 小时（测试用）
 
+# 新增：换数据源抓帖（默认免登录；失败时若配了 instagrapi 凭据则自动兜底）
+python run.py fetch --account messi                    # 单个账号，免 CSV
+python run.py fetch --post https://www.instagram.com/p/ABC123/   # 单条帖子链接
+python run.py fetch --hashtag football                # 标签搜索，默认前 100
+python run.py fetch --keyword "world cup" --top 50    # 通用关键词搜索，取前 50
+python run.py run --hashtag football                  # run 也支持，一步出任务单
+
 # ② 给"还没有评论"的帖子生成评论
 python run.py generate                        # 用默认提供方（claude-cli）
 python run.py generate --provider gpt --limit 3   # 改用 GPT，只处理 3 条
@@ -112,6 +119,24 @@ python run.py stats
 | `--provider` | `claude-cli` / `claude-api` / `gpt` / `gemini` | `claude-cli` |
 | `--max-tasks-per-day N` | 每天最多生成多少条评论任务（防封节流） | 20 |
 | `--csv` | 覆盖 CSV 路径 | `config.yaml` 里的 `csv_path` |
+| `--account <handle>` | 只抓单个指定账号（免 CSV/txt） | 无 |
+| `--post <url>` | 只抓单条帖子（URL 或 shortcode） | 无 |
+| `--hashtag <tag>` | 按话题标签跨账号搜索 | 无 |
+| `--keyword <q>` | 按通用关键词跨账号搜索 | 无 |
+| `--top N` | 标签/关键词搜索取多少帖 | `config.yaml` 的 `default_top`（100） |
+
+### 数据源与两层抓取策略
+
+- **不传任何数据源参数** → 沿用现状，读 CSV 账号清单。
+- 四个数据源参数 `--account/--post/--hashtag/--keyword` **互斥**，一次只能用一个。
+- **时间窗口**：`--account`/CSV 仍按 `--hours`(默认 2h) 只留新帖；`--hashtag`/`--keyword`/`--post`
+  默认不按时间过滤（取「前 N 热门/相关帖」），显式传 `--hours` 才会再叠加时间筛选。
+- **两层抓取**：先走**免登录**公开接口（最低封号风险）；标签/关键词/单帖在免登录拿不到时，
+  若 `.env` 配了 instagrapi 凭据（`INSTAGRAPI_SESSIONID` 或 `USERNAME`+`PASSWORD`），则自动用
+  instagrapi **兜底读取**（仅读取、绝不自动发评论）；没配凭据就如实跳过。
+- **足球语气提醒**：评论提示词是「足球 → 大学申请」定向，关键词搜到非足球内容时类比会牵强；
+  非足球关键词请自行调整 `prompts/`。
+- ⚠️ instagrapi 是非官方私有 API，有封号风险，仅建议低频使用、用可弃用的小号。
 
 ---
 
