@@ -139,8 +139,8 @@ def cmd_fetch(args, cfg) -> None:
     conn = store.connect(_abs(cfg["db_path"]))
     proxy = os.getenv("IG_PROXY") or None
     if not proxy:
-        print("⚠️  IG_PROXY is not set — fetching 100 accounts will likely hit rate "
-              "limits. Set it in .env or use --limit for a small test.", file=sys.stderr)
+        print("ℹ️  未设置 IG_PROXY，默认使用本地 IP 直连。"
+              "（账号较多时本地 IP 可能被限流；要稳可在 .env 配置代理。）")
 
     fetcher = InstagramFetcher(proxy, retries=int(cfg["fetch_retries"]))
     accounts = read_accounts(csv_path, args.limit)
@@ -149,7 +149,7 @@ def cmd_fetch(args, cfg) -> None:
 
     new_posts = existing = errors = 0
     print(f"① 抓帖：{len(accounts)} 个账号 · 窗口=过去 {hours}h · "
-          f"代理={'on' if proxy else 'OFF'}")
+          f"出口={'代理 IP' if proxy else '本地 IP 直连'}")
     bar = _make_bar(len(accounts), "① 抓帖", "账号")
     for i, acc in enumerate(accounts, 1):
         handle = acc["handle"]
