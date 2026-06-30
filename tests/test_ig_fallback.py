@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from core import ig_fallback
-from core.ig_fallback import _media_to_post, fallback_available
+from core.ig_fallback import _dedup, _media_to_post, fallback_available
+from core.ig_fetcher import Post
 
 
 def test_fallback_available_checks_env(monkeypatch):
@@ -49,3 +50,7 @@ def test_media_to_post_falls_back_to_resource_thumbnail():
     assert p.media_url == "https://cdn/r.jpg"
     assert p.owner_handle is None
     assert p.posted_at is None
+
+
+def test_dedup_zero_limit_returns_empty():
+    assert _dedup([Post(post_id="1", url="u")], 0) == []

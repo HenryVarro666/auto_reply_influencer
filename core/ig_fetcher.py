@@ -178,6 +178,8 @@ def _media_node_to_post(media: dict) -> Post | None:
 
 
 def _merge_dedup_posts(groups: list[list[Post]], limit: int) -> list[Post]:
+    if limit <= 0:
+        return []
     seen: set[str] = set()
     out: list[Post] = []
     for group in groups:

@@ -75,6 +75,11 @@ def test_merge_dedup_posts_dedups_and_caps():
     assert [p.post_id for p in _merge_dedup_posts([a, b], limit=2)] == ["1", "2"]
 
 
+def test_merge_dedup_posts_zero_limit_returns_empty():
+    posts = [Post(post_id="1", url="u1"), Post(post_id="2", url="u2")]
+    assert _merge_dedup_posts([posts], limit=0) == []
+
+
 def _hashtag_payload():
     media = {
         "pk": "111", "code": "SC1",

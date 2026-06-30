@@ -53,6 +53,8 @@ def _media_to_post(media) -> Post:
 
 
 def _dedup(posts: list[Post], limit: int) -> list[Post]:
+    if limit <= 0:
+        return []
     seen: set[str] = set()
     out: list[Post] = []
     for p in posts:
