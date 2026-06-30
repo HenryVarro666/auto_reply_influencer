@@ -188,6 +188,7 @@ def test_parse_embed_post_html_fallback():
     p = _parse_embed_post(html, "SHORT2")
     assert p.media_url == "https://cdn/h.jpg"
     assert p.owner_handle == "html_user"
+    assert p.caption == "hello world"
 
 
 def test_parse_embed_post_raises_when_empty():

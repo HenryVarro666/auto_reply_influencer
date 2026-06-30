@@ -220,7 +220,7 @@ _EMBED_USER_JSON_RE = re.compile(r'"username":"(.*?)"')
 _EMBED_CAPTION_JSON_RE = re.compile(
     r'"edge_media_to_caption":\{"edges":\[\{"node":\{"text":"(.*?)"\}\}\]'
 )
-_EMBED_IMG_HTML_RE = re.compile(r'class="EmbeddedMediaImage"[^>]*?src="(.*?)"')
+_EMBED_IMG_HTML_RE = re.compile(r'<img(?=[^>]*class="EmbeddedMediaImage")[^>]*\ssrc="(.*?)"')
 _EMBED_USER_HTML_RE = re.compile(r'class="UsernameText"[^>]*>(.*?)<')
 _EMBED_CAPTION_HTML_RE = re.compile(r'class="Caption"[^>]*>(.*?)</div>', re.DOTALL)
 
