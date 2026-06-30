@@ -20,13 +20,15 @@ import os
 import random
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import yaml
 from dotenv import load_dotenv
 
 from core import comment_generator, store, task_writer
-from core.ig_fetcher import FetchError, InstagramFetcher, ProfileNotFound, normalize_handle
+from core.ig_fetcher import FetchError, InstagramFetcher, Post, ProfileNotFound, normalize_handle
 from core.llm_client import LLMClient, LLMError
 
 try:
@@ -79,6 +81,7 @@ _DEFAULTS = {
     "db_path": "data/influencer.db",
     "media_dir": "media",
     "tasks_dir": "daily_tasks",
+    "default_top": 100,
 }
 
 
@@ -94,6 +97,26 @@ def load_config() -> dict:
 def _abs(cfg_value: str) -> Path:
     p = Path(cfg_value)
     return p if p.is_absolute() else ROOT / p
+
+
+@dataclass
+class Source:
+    kind: str                 # csv | account | post | hashtag | keyword
+    value: str | None = None  # handle / url / tag / query
+
+
+def select_source(args) -> Source:
+    """Map CLI args to a Source. Mutual exclusivity is enforced by argparse;
+    if no source flag is set we default to the CSV account list."""
+    if getattr(args, "account", None):
+        return Source("account", args.account)
+    if getattr(args, "post", None):
+        return Source("post", args.post)
+    if getattr(args, "hashtag", None):
+        return Source("hashtag", args.hashtag)
+    if getattr(args, "keyword", None):
+        return Source("keyword", args.keyword)
+    return Source("csv")
 
 
 def read_accounts(csv_path: Path, limit: int | None = None) -> list[dict]:
@@ -129,6 +152,58 @@ def _within_window(posted_at: str | None, cutoff: _dt.datetime) -> bool:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
     return dt >= cutoff
+
+
+def _account_for_post(post: Post) -> dict:
+    """Synthesize an account dict for a post whose owner came from search results."""
+    handle = post.owner_handle or "unknown"
+    url = f"https://www.instagram.com/{handle}/" if handle != "unknown" else ""
+    return {"handle": handle, "name": "", "type": "", "country_league": "",
+            "followers": None, "url": url}
+
+
+def _ingest_posts(conn, items, *, media_dir, date, proxy, cutoff) -> tuple[int, int]:
+    """Download + insert each (Post, account) pair. Returns (new, existing).
+
+    cutoff=None means no time filter (hashtag/keyword/post); a datetime applies
+    the 'published within the window' filter (account/CSV).
+    """
+    new = existing = 0
+    for post, account in items:
+        if cutoff is not None and not _within_window(post.posted_at, cutoff):
+            continue
+        if store.post_exists(conn, post.post_id):
+            existing += 1
+            continue
+        handle = account["handle"]
+        media_path = media_dir / date / handle / f"{post.post_id}.jpg"
+        ok = store.download_media(post.media_url, media_path, proxy=proxy)
+        store.insert_post(conn, post, account, str(media_path) if ok else None)
+        new += 1
+    return new, existing
+
+
+def _gather_with_fallback(primary: Callable[[], list], fallback, *, label: str) -> list:
+    """Run primary(); on error or empty result fall back to fallback() if provided.
+
+    primary/fallback are zero-arg callables returning list[Post]; fallback may be None.
+    """
+    try:
+        posts = primary() or []
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ {label}: 免登录失败 — {exc}")
+        posts = []
+    if posts:
+        return posts
+    if fallback is None:
+        print(f"  ℹ {label}: 免登录无结果，且未配置 instagrapi 兜底凭据，跳过。")
+        return []
+    print(f"  ↪ {label}: 免登录无结果，改用 instagrapi 兜底…")
+    try:
+        return fallback() or []
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ✗ {label}: instagrapi 兜底也失败 — {exc}")
+        return []
 
 
 # --- Stage 1 ----------------------------------------------------------------
