@@ -203,6 +203,18 @@ def _parse_hashtag_posts(payload: dict, limit: int) -> list[Post]:
     return _merge_dedup_posts([posts], limit)
 
 
+def _parse_topsearch(payload: dict) -> tuple[list[str], list[str]]:
+    tags = [
+        name for h in (payload.get("hashtags") or [])
+        if (name := (h.get("hashtag") or {}).get("name"))
+    ]
+    users = [
+        uname for u in (payload.get("users") or [])
+        if (uname := (u.get("user") or {}).get("username"))
+    ]
+    return tags, users
+
+
 class InstagramFetcher:
     """Fetches recent posts for public profiles via the web endpoint."""
 
@@ -282,3 +294,29 @@ class InstagramFetcher:
         clean = tag.lstrip("#").strip()
         payload = self._fetch_json(_HASHTAG_URL.format(quote(clean)))
         return _parse_hashtag_posts(payload, limit)
+
+    def search_keyword(self, query: str, limit: int = 100) -> list[Post]:
+        """Login-free general keyword search.
+
+        topsearch resolves the query to ranked hashtags + accounts (it does NOT
+        return posts directly); we pull posts from the top hashtags first, then
+        top up from the top accounts' recent posts. Cross-source dedup + cap.
+        """
+        payload = self._fetch_json(_TOPSEARCH_URL.format(quote(query)))
+        tags, users = _parse_topsearch(payload)
+        groups: list[list[Post]] = []
+        for tag in tags[:3]:
+            try:
+                groups.append(self.search_hashtag(tag, limit))
+            except FetchError:
+                continue
+            if sum(len(g) for g in groups) >= limit:
+                return _merge_dedup_posts(groups, limit)
+        for user in users[:5]:
+            if sum(len(g) for g in groups) >= limit:
+                break
+            try:
+                groups.append(self.get_recent_posts(user, limit=12))
+            except (FetchError, ProfileNotFound):
+                continue
+        return _merge_dedup_posts(groups, limit)

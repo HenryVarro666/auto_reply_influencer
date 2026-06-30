@@ -9,6 +9,7 @@ from core.ig_fetcher import (
     ProfileNotFound,
     _merge_dedup_posts,
     _parse_hashtag_posts,
+    _parse_topsearch,
     shortcode_from_url,
 )
 
@@ -110,3 +111,50 @@ def test_parse_hashtag_posts_handles_carousel_and_empty():
     assert posts[0].media_url == "https://cdn/c.jpg"
     assert posts[0].caption == ""
     assert _parse_hashtag_posts({}, limit=50) == []
+
+
+# --- Task 3 tests ---
+
+
+def test_parse_topsearch_ranked_tags_and_users():
+    payload = {
+        "hashtags": [
+            {"hashtag": {"name": "football"}},
+            {"hashtag": {"name": "soccer"}},
+        ],
+        "users": [{"user": {"username": "leomessi"}}],
+        "places": [{"place": {"title": "ignored"}}],
+    }
+    tags, users = _parse_topsearch(payload)
+    assert tags == ["football", "soccer"]
+    assert users == ["leomessi"]
+    assert _parse_topsearch({}) == ([], [])
+
+
+def test_search_keyword_uses_hashtags_first(monkeypatch):
+    f = InstagramFetcher(None)
+    monkeypatch.setattr(f, "_fetch_json", lambda url: {
+        "hashtags": [{"hashtag": {"name": "football"}}],
+        "users": [{"user": {"username": "leomessi"}}],
+    })
+    monkeypatch.setattr(f, "search_hashtag",
+                        lambda tag, limit: [Post(post_id="h1", url="u", owner_handle="a")])
+    # users only used to top up; here the hashtag already satisfies limit
+    monkeypatch.setattr(f, "get_recent_posts",
+                        lambda handle, limit=12: [Post(post_id="u1", url="u", owner_handle=handle)])
+    out = f.search_keyword("football", limit=1)
+    assert [p.post_id for p in out] == ["h1"]
+
+
+def test_search_keyword_tops_up_from_users(monkeypatch):
+    f = InstagramFetcher(None)
+    monkeypatch.setattr(f, "_fetch_json", lambda url: {
+        "hashtags": [{"hashtag": {"name": "football"}}],
+        "users": [{"user": {"username": "leomessi"}}],
+    })
+    monkeypatch.setattr(f, "search_hashtag",
+                        lambda tag, limit: [Post(post_id="h1", url="u", owner_handle="a")])
+    monkeypatch.setattr(f, "get_recent_posts",
+                        lambda handle, limit=12: [Post(post_id="u1", url="u", owner_handle=handle)])
+    out = f.search_keyword("football", limit=5)
+    assert [p.post_id for p in out] == ["h1", "u1"]
