@@ -7,6 +7,8 @@ from core.ig_fetcher import (
     InstagramFetcher,
     Post,
     ProfileNotFound,
+    _merge_dedup_posts,
+    _parse_hashtag_posts,
     shortcode_from_url,
 )
 
@@ -26,11 +28,6 @@ def test_shortcode_from_url_variants():
 
 
 # --- Task 2 tests ---
-
-from core.ig_fetcher import (
-    _merge_dedup_posts,
-    _parse_hashtag_posts,
-)
 
 
 def test_client_kwargs_proxy_and_http2(monkeypatch):

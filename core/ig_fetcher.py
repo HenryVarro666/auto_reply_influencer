@@ -259,7 +259,11 @@ class InstagramFetcher:
         return _parse_posts(user, limit)
 
     def get_recent_posts(self, handle: str, limit: int = 12) -> list[Post]:
-        """Return the newest ``limit`` posts for ``handle`` (newest first)."""
+        """Return the newest ``limit`` posts for ``handle`` (newest first).
+
+        Raises ProfileNotFound on 404, FetchError on anything else after
+        exhausting retries.
+        """
         return self._with_retries(lambda: self._request_once(handle, limit), f"@{handle}")
 
     def _fetch_json(self, url: str) -> dict:
