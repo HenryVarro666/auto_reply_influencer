@@ -59,6 +59,7 @@ class Post:
     comment_count: int | None = None
     view_count: int | None = None
     comments_disabled: bool | None = None
+    owner_handle: str | None = None  # author of THIS post (set for hashtag/keyword/single-post results)
 
 
 def normalize_handle(raw: str) -> str | None:
@@ -79,6 +80,22 @@ def normalize_handle(raw: str) -> str | None:
     if not value or not _USERNAME_RE.match(value):
         return None
     return value
+
+
+_SHORTCODE_RE = re.compile(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
+
+
+def shortcode_from_url(value: str) -> str | None:
+    """Extract an IG post shortcode from a /p//reel//tv/ URL, or accept a bare shortcode."""
+    if not value:
+        return None
+    v = value.strip()
+    m = _SHORTCODE_RE.search(v)
+    if m:
+        return m.group(1)
+    if "/" not in v and re.fullmatch(r"[A-Za-z0-9_-]+", v):
+        return v
+    return None
 
 
 def _ts_to_iso(ts: int | None) -> str | None:
