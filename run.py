@@ -270,7 +270,7 @@ def _cmd_fetch_accounts(args, cfg, conn, fetcher, proxy, media_dir, date, source
 
 
 def _cmd_fetch_search(args, cfg, conn, fetcher, proxy, media_dir, date, source) -> None:
-    top = args.top if getattr(args, "top", None) else int(cfg["default_top"])
+    top = args.top if getattr(args, "top", None) is not None else int(cfg["default_top"])
     cutoff = None
     if args.hours is not None:
         cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=args.hours)
